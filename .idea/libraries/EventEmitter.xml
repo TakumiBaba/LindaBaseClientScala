@@ -1,0 +1,9 @@
+<component name="libraryTable">
+  <library name="EventEmitter">
+    <CLASSES>
+      <root url="file://$PROJECT_DIR$/../../eventemitter/target/scala-2.10/classes" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

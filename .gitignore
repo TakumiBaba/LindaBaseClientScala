@@ -1,0 +1,7 @@
+target/
+project/target
+
+.DS_Store
+Thumnail.db
+lib_managed/
+src_managed/
