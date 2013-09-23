@@ -1,18 +1,20 @@
 package com.takumibaba.lindabase.client
 
-import io.netty.bootstrap.Bootstrap
-import io.netty.channel.nio.NioEventLoopGroup
-import io.netty.channel.socket.nio.NioSocketChannel
-import io.netty.channel.socket.SocketChannel
-import io.netty.channel._
-import io.netty.handler.codec.http.websocketx._
-import io.netty.handler.codec.http._
-import io.netty.util.CharsetUtil
 import java.net.URI
-import scala.util.parsing.json._
-import scala.util.parsing.json.JSONArray
-import scala.util.parsing.json.JSONObject
+import scala.util.parsing.json.{JSON, JSONArray, JSONObject}
 import com.takumibaba.eventemitter.EventEmitter
+import org.java_websocket.client.WebSocketClient
+import org.java_websocket.handshake.ServerHandshake
+import io.backchat.hookup._
+import akka.actor.{Cancellable, ActorSystem}
+import scala.concurrent.duration._
+import java.io.File
+import scala.Some
+import io.backchat.hookup.HookupClientConfig
+import io.backchat.hookup.IndefiniteThrottle
+import java.util.concurrent.atomic.AtomicInteger
+import org.json4s.JsonAST.{JObject, JValue}
+import scala.concurrent.ops._
 
 /**
  * Created with IntelliJ IDEA.
@@ -21,45 +23,70 @@ import com.takumibaba.eventemitter.EventEmitter
  * Time: 17:45
  * To change this template use File | Settings | File Templates.
  */
-class WebSocketIO(val uri:URI, var linda:Linda) extends EventEmitter{
-  var connectionChannel:Channel = null;
-  var session:String = "";
+//class WebSocketIO(_uri:URI, var linda:Linda) extends WebSocketClient(_uri) with EventEmitter{
+class WebSocketIO(var uri:URI, var linda:Linda) extends  EventEmitter{
+  val system  = ActorSystem("WebSocketIO")
+  var timeout: Cancellable = null
+  val messageCounter = new AtomicInteger(0)
+  val bufferedCounter = new AtomicInteger(0)
+  var client:HookupClient = null
+  var isRunning:Boolean = false
 
   def connect() = {
-    var group:EventLoopGroup = new NioEventLoopGroup();
-    try{
-      var b:Bootstrap = new Bootstrap();
-      var protocol:String = uri.getScheme();
-      if(protocol != "ws"){
-        throw new IllegalArgumentException("unsupported protocol " + protocol);
+    client = new HookupClient {
+      def receive = {
+        case Connected => {
+          println(Connected)
+          isRunning = true
+        }
+        case Reconnecting => {
+          println("reconnecting")
+          isRunning = false
+        }
+        case Disconnected(_) =>{
+          println("disconnected")
+          isRunning = false
+        }
+
+        case m @ Error(exOpt) =>
+          System.err.println("Received an error: " + m)
+          exOpt foreach { _.printStackTrace(System.err) }
+        case m: TextMessage =>
+          println("RECV: " + m)
+        case m: JsonMessage =>
+          var tuple:Map[String, Any] = m.content.asInstanceOf[JObject].values
+          var eventType:String = tuple.get("type").get.toString()
+          println(tuple)
+          eventType match {
+            case "__session_id" =>{
+              println("__session_id")
+              linda.session = tuple.get("data").get.toString()
+              emit("connect",List())
+            }
+            case e:String if eventType.contains("__linda") =>{
+              var data:List[Any] = tuple.get("data").get.asInstanceOf[List[Any]]
+              emit(e, data)
+            }
+            case _ => println(eventType)
+          }
+        case _ => println("_")
+
       }
 
-      var headers:HttpHeaders = new DefaultHttpHeaders();
-      headers.add("header", "value");
+      val settings:HookupClientConfig = HookupClientConfig(
+        uri,
+        throttle = IndefiniteThrottle(5 seconds, 30 minutes),
+        buffer = Some(new FileBuffer(new File("./work/buffer.log")))
+      )
 
-      val handler:WebSocketClientHandler = new WebSocketClientHandler(WebSocketClientHandshakerFactory.newHandshaker(uri, WebSocketVersion.V13, null, false, headers));
+      connect() onSuccess {
+        case _ => {
+          println("connect")
 
-      b.group(group).channel(classOf[NioSocketChannel]).handler(new ChannelInitializer[SocketChannel] {
-        override def initChannel(ch:SocketChannel) = {
-          var pipeline:ChannelPipeline = ch.pipeline();
-          pipeline.addLast("http-doc", new HttpClientCodec());
-          pipeline.addLast("aggregator", new HttpObjectAggregator(8192));
-          pipeline.addLast("ws-handler", handler);
         }
-      });
 
-      connectionChannel = b.connect(uri.getHost, uri.getPort).sync().channel();
-      handler.handshakeFuture().sync();
-
-    } catch {
-      case e:Exception => println("exception!");
-    } finally {
-      group.shutdownGracefully();
+      }
     }
-  }
-  def disConnect() = {
-    connectionChannel.closeFuture().sync();
-
   }
 
   def push(typ:String, tuple:List[Any]) = {
@@ -67,57 +94,8 @@ class WebSocketIO(val uri:URI, var linda:Linda) extends EventEmitter{
       "type" -> typ,
       "data" -> new JSONArray(tuple),
       "session" -> linda.session
-    ));
-    println("push:"+msg.toString())
-    val frame:TextWebSocketFrame = new TextWebSocketFrame(msg.toString())
-    println(frame)
-    connectionChannel.write(frame);
+    ))
+    client.send(msg.toString())
   }
-
-  class WebSocketClientHandler(var handshaker:WebSocketClientHandshaker) extends SimpleChannelInboundHandler[Object]{
-    var _handshakeFuture:ChannelPromise = null;
-
-    def handshakeFuture():ChannelPromise = return _handshakeFuture;
-    override def handlerAdded(ctx:ChannelHandlerContext) = _handshakeFuture = ctx.newPromise();
-    override def channelActive(ctx:ChannelHandlerContext) = handshaker.handshake(ctx.channel());
-    override def channelInactive(ctx:ChannelHandlerContext) = linda.io.emit("disconnect", List());
-    override def channelRead0(ctx:ChannelHandlerContext, msg:Object):Unit = {
-      var ch:Channel = ctx.channel();
-      if(!handshaker.isHandshakeComplete()){
-        handshaker.finishHandshake(ch, msg.asInstanceOf[FullHttpResponse]);
-        linda.io.emit("connect", List())
-//        _handshakeFuture.setSuccess()
-        return;
-      }
-
-      if (msg.isInstanceOf[FullHttpResponse]) {
-        var response:FullHttpResponse = msg.asInstanceOf[FullHttpResponse];
-        throw new Exception("Unexpected FullHttpResponse (getStatus=" + response.getStatus() + ", content="
-          + response.content().toString(CharsetUtil.UTF_8) + ')');
-      }
-      var frame:WebSocketFrame = msg.asInstanceOf[WebSocketFrame]
-      if(frame.isInstanceOf[TextWebSocketFrame]){
-        //        var obj:Option[Any] = ;
-        var msg:Map[String, Any] = JSON.parseFull(frame.asInstanceOf[TextWebSocketFrame].text()).get.asInstanceOf[Map[String, Any]];
-        println("hoge"+msg)
-        msg.get("type").get match{
-          case "__session_id" => linda.session = msg.get("data").get.toString
-          case "__linda_write.*" => println("write"); // linda.emit("__linda_write_callback_", msg.get("data").asInstanceOf[List[Any]])
-          case "__linda_watch.*" => println("watch"); // linda.emit("watch", msg.get("data").asInstanceOf[List[Any]])
-          case "__linda_read.*" =>  println("read");  // linda.emit("read", msg.get("data").asInstanceOf[List[Any]])
-          case "__linda_take.*" =>  println("take");  // linda.emit("take", msg.get("data").asInstanceOf[List[Any]])
-          case _ => println(msg.get("type").get);
-
-        }
-
-      } else if(frame.isInstanceOf[PongWebSocketFrame]){
-
-      } else if(frame.isInstanceOf[CloseWebSocketFrame]){
-        ch.close();
-      }
-
-    }
-  }
-
 }
 
