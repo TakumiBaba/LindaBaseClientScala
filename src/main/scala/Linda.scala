@@ -52,7 +52,7 @@ class Linda extends EventEmitter{
 //        Thread.sleep(1000)
 //        println("sleep")
 //      }
-//      return resultTuple
+//      return resultTuple               ja
 //    }
     def take(tuple:JSONArray, callback: (List[Any])=> Any){
       val callback_id:String = callbackId()

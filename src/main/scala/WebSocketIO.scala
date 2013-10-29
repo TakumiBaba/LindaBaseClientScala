@@ -31,6 +31,7 @@ class WebSocketIO(var uri:URI, var linda:Linda) extends  EventEmitter{
   val bufferedCounter = new AtomicInteger(0)
   var client:HookupClient = null
   var isRunning:Boolean = false
+  var sync:Boolean = false
 
   def connect() = {
     client = new HookupClient {
@@ -96,6 +97,20 @@ class WebSocketIO(var uri:URI, var linda:Linda) extends  EventEmitter{
       "session" -> linda.session
     ))
     client.send(msg.toString())
+  }
+
+  def syncPush(typ:String, tuple:List[Any]) = {
+    var msg:JSONObject = new JSONObject(Map(
+      "type" -> typ,
+      "data" -> new JSONArray(tuple),
+      "session" -> linda.session
+    ))
+    client.send(msg.toString())
+    sync = true
+//    while(sync){
+//      Thread.sleep(1000)
+//      println("wait")
+//    }
   }
 }
 
